@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, ActionRowBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, StringSelectMenuBuilder, EmbedBuilder, PermissionFlagsBits, SlashCommandBuilder, Routes, REST } = require('discord.js');
+const { Client, GatewayIntentBits, ActionRowBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, StringSelectMenuBuilder, EmbedBuilder, PermissionFlagsBits, SlashCommandBuilder, Routes, REST, Collection, Events } = require('discord.js');
 const { Pool } = require('pg');
 require('dotenv').config();
 
@@ -8,9 +8,13 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.DirectMessages
+        GatewayIntentBits.DirectMessages,
+        GatewayIntentBits.GuildMessageReactions
     ]
 });
+
+// Thêm collection cho prefix commands
+client.commands = new Collection();
 
 // Kiểm tra kết nối database
 let pool;
@@ -57,7 +61,7 @@ async function initializeDatabase() {
                 guild_id VARCHAR(20),
                 email VARCHAR(255) NOT NULL,
                 password VARCHAR(255) NOT NULL,
-                service_type VARCHAR(10) NOT NULL CHECK (service_type IN ('mcfa', 'xboxgp')),
+                service_type VARCHAR(10) NOT NULL CHECK (service_type IN ('nfa', 'fa', 'xboxgp')),
                 used BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT NOW()
             );
@@ -239,6 +243,46 @@ const commands = [
         .setDescription('Check current stock count')
 ];
 
+// Định nghĩa prefix commands
+const prefixCommands = {
+    'stock': {
+        description: 'Check current stock count',
+        execute: handleStockCommand
+    }
+};
+
+// Hàm xử lý prefix command stock
+async function handleStockCommand(message) {
+    const guildSettings = await getGuildSettings(message.guild.id);
+
+    if (!guildSettings) {
+        return message.reply('❌ Please run `/setup` first!');
+    }
+
+    const payoutRole = guildSettings.payout_role;
+    if (!message.member.roles.cache.has(payoutRole)) {
+        return message.reply('❌ You do not have permission to use this command!');
+    }
+
+    const stockCount = await getStockCount(message.guild.id);
+    
+    if (stockCount.length === 0) {
+        return message.reply('❌ No accounts in stock! Use `/addstock` to add accounts.');
+    }
+
+    let stockMessage = '**📊 Current Stock:**\n';
+    stockCount.forEach(item => {
+        let serviceName = '';
+        if (item.service_type === 'nfa') serviceName = 'Minecraft Non Full Access (NFA)';
+        else if (item.service_type === 'fa') serviceName = 'Minecraft Full Access (FA)';
+        else if (item.service_type === 'xboxgp') serviceName = 'Xbox GamePass';
+        
+        stockMessage += `• ${serviceName}: ${item.count} accounts\n`;
+    });
+
+    await message.reply(stockMessage);
+}
+
 async function registerCommands() {
     try {
         const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -323,7 +367,7 @@ async function handleAddStock(interaction) {
     await interaction.showModal(modal);
 }
 
-// Stock command
+// Stock command (slash command)
 async function handleStock(interaction) {
     const guildSettings = await getGuildSettings(interaction.guild.id);
 
@@ -431,6 +475,7 @@ client.on('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
     await initializeDatabase();
     await registerCommands();
+    console.log('Bot is ready! Prefix: $');
 });
 
 client.on('interactionCreate', async (interaction) => {
@@ -497,6 +542,25 @@ client.on('interactionCreate', async (interaction) => {
                 content: '❌ An error occurred while processing your command.',
                 flags: 64
             }).catch(console.error);
+        }
+    }
+});
+
+// Xử lý prefix commands
+client.on('messageCreate', async (message) => {
+    // Ignore messages from bots and without prefix
+    if (message.author.bot || !message.content.startsWith('$')) return;
+
+    const args = message.content.slice(1).trim().split(/ +/);
+    const commandName = args.shift().toLowerCase();
+
+    // Check if command exists
+    if (prefixCommands[commandName]) {
+        try {
+            await prefixCommands[commandName].execute(message, args);
+        } catch (error) {
+            console.error('Prefix command error:', error);
+            await message.reply('❌ There was an error executing that command.');
         }
     }
 });
